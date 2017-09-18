@@ -56,6 +56,17 @@ CREATE OR REPLACE PACKAGE TBX_ARCH_UTILS AS
     ac_src_addtional_sql        in varchar2 default null 
   ) return varchar2;
 
+  function F_GET_ALL_TABLES_MAPPING_CLOB(
+    ac_orig_owner               in all_tab_columns.owner%type,
+    ac_orig_table_name          in all_tab_columns.table_name%type,
+    ac_plsql_code               in varchar2,
+    ac_src_alias                in all_tab_columns.table_name%type,
+    ac_include_original_table   in varchar2,
+    ac_include_hsk_tables       in varchar2,
+    ac_include_arch_db_table    in varchar2,
+    ac_src_addtional_sql        in varchar2 default null 
+  ) return clob;
+
   procedure p_log( 
     ac_log_type                 in arch_log.log_type%type,
     ac_log_proc                 in arch_log.log_proc%type,
@@ -232,6 +243,60 @@ CREATE OR REPLACE PACKAGE BODY TBX_ARCH_UTILS AS
     end loop;
     return lc_sql;
   end F_GET_ALL_TABLES_MAPPING_SQL;
+
+
+  function F_GET_ALL_TABLES_MAPPING_CLOB(
+    ac_orig_owner               in all_tab_columns.owner%type,
+    ac_orig_table_name          in all_tab_columns.table_name%type,
+    ac_plsql_code               in varchar2,
+    ac_src_alias                in all_tab_columns.table_name%type,
+    ac_include_original_table   in varchar2,
+    ac_include_hsk_tables       in varchar2,
+    ac_include_arch_db_table    in varchar2,
+    ac_src_addtional_sql        in varchar2 default null 
+  ) return clob
+  is
+    lr_par par_arch_tables%rowtype;
+    lc_sql varchar2(32000);
+    ln_number_of_tables number;
+    lcl_return clob;
+  begin
+     DBMS_LOB.createtemporary (lcl_return, TRUE);
+
+    ln_number_of_tables := 0;
+    select * into lr_par -- load parameterization
+      from par_arch_tables where amnd_state = 'A' and table_name = ac_orig_table_name;
+    for r in ( 
+      
+      select owner, table_name, to_char(null) db_link_name 
+        from all_tables 
+          where owner = gc_local_arch_owner
+            and regexp_like ( table_name, lr_par.arch_tables_mask)
+            and ac_include_hsk_tables = 'Y'
+      union all
+        select ac_orig_owner, ac_orig_table_name, to_char(null) db_link_name  
+          from dual where ac_include_original_table = 'Y'
+      union all
+        select gc_remote_arch_owner, ac_orig_table_name, gc_link_name db_link_name
+          from dual where ac_include_arch_db_table = 'Y'
+      ) loop -- find all tables
+      if ln_number_of_tables > 0 then
+        lc_sql := lc_sql||chr(10)||'union all'||chr(10);  
+      end if;
+      if ac_plsql_code is null then
+        lc_sql := lc_sql||f_get_table_mapping_sql(ac_orig_owner, ac_orig_table_name,NULL,
+          r.owner, r.table_name, ac_src_alias, r.db_link_name, ac_src_addtional_sql);
+      else
+        lc_sql := lc_sql||'select * from TABLE( '||ac_plsql_code||'( '''||r.owner||
+        ''', '''||r.table_name||''', '''||ac_src_alias||''', '''||r.db_link_name||''', '''||replace( ac_src_addtional_sql, '''', '''''')||'''))';
+      end if;
+      ln_number_of_tables := ln_number_of_tables + 1;
+      
+      dbms_lob.append( lcl_return, lc_sql);
+      lc_sql := '';
+    end loop;
+    return lcl_return;
+  end F_GET_ALL_TABLES_MAPPING_CLOB;
 
   procedure p_recreate_local_views
   is
